@@ -1,0 +1,1255 @@
+---
+title: '"Direct inhibition of the NOTCH transcription factor complex": Análisis transcripcional'
+author: "Diego Mañanes Cayero´"
+date: "03/06/2020"
+documentclass: article
+output:
+  html_document:
+    collapsed: no
+    number_sections: yes
+    self_contained: no
+    toc: yes
+    toc_depth: 5
+    toc_float: yes
+  pdf_document:
+    fig_caption: yes
+    keep_tex: yes
+    number_sections: yes
+    toc: yes
+    toc_depth: 3
+geometry: margin=1in
+fontsize: 11pt
+classoption: a4paper
+---
+
+## Configuración inicial
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+## directories and paths
+projectPath <- file.path("/home/diegommcc/Documentos/proyectos_master/proyectos_transcriptomica/Trabajo_Transcriptomica")
+
+analysisDir <- "microarray.Analysis"
+analysisPath <- file.path(projectPath, analysisDir)
+outputDir <- "FirstTest"
+outputPath <- file.path(analysisPath, outputDir)
+dataPath <- file.path(projectPath, "data")
+prefix <- "FirstTest"
+setwd(analysisPath)
+
+if (!dir.exists(outputPath) | !dir.exists(file.path(outputPath, "Plots"))) {
+  dir.create(outputPath, recursive = T)
+  dir.create(file.path(outputPath, "Plots"), showWarnings = F)
+}
+
+# dir plots
+plotsOutputPath <- file.path(outputPath, "Plots/")
+plotsTexPath <- file.path(projectPath, "Tex-Trabajo/figures/")
+tablesTexPaths <- file.path(projectPath, "Tex-Trabajo/tables/")
+
+## helper functions
+source(file.path(projectPath, "helperFunctions.R"))
+
+## Settings to knitr
+knitr::opts_chunk$set(
+    fig.align = "center",
+    fig.path = plotsTexPath,
+    fig.pos = "H",
+    message = FALSE,
+    warning = FALSE,
+    comment = NA,
+    dev = c("jpeg"),
+    dpi = 300
+)
+
+options(stringsAsFactors = FALSE)
+
+## packages used
+library(dplyr)
+library(affy)
+library(limma)
+library(genefilter)
+library(RColorBrewer)
+library(ggplot2)
+library(ggpubr)
+library(hgu133plus2.db)
+library(kableExtra)
+library(tidyr)
+library(factoextra)
+library(gridExtra)
+library(FactoMineR)
+library(pheatmap)
+library(plot3D)
+library(maptools) 
+library(xtable)
+library(latex2exp)
+library(tabulizer)
+library(clusterProfiler)
+library(msigdbr)
+```
+
+```{r colorPlots}
+cols <- list(fillBoxplot1 = brewer.pal(3, "Pastel2"),
+             fillBoxplot2 = brewer.pal(3, "Pastel1"),
+             colorPoints = c("#fc9803", "#0377fc"),
+             colorFill = c("#f0b24f", "#5493eb"),
+             colorPointsDrug = c("#c71c1c", "#1fa340"),
+             colorFillDrug = c("#ad5151", "#51ad59"),
+             heatmap11 = brewer.pal(11, "RdBu"),
+             heatmap25 = colorRampPalette(rev(brewer.pal(11, "RdBu")))(25))
+```
+
+## Carga de datos
+
+```{r readCELfiles}
+sampleNames <- substring(dir(dataPath, pattern = ".+\\.CEL$"), 1, 9)
+
+dfTargets <- data.frame(FileName = sampleNames,
+                        Condition = c(rep("DMSO", 6), rep("SAHM1", 6)),
+                        CellLine = rep(c(rep("KOPT-K1", 3), 
+                                         rep("HPB-ALL", 3)), 2),
+                        row.names = sampleNames)
+
+rawDataAffy <- ReadAffy(filenames = dir(dataPath, pattern = ".+\\.CEL$", 
+                                        full.names = TRUE),
+                        phenoData = dfTargets)
+
+knitr::kable(head(rawDataAffy@assayData$exprs), 
+             caption = "Matriz de expresión génica") %>%
+ kable_styling(latex_options = c("hold_position"),position = "center") 
+```
+
+## Primera aproximación: normalización de las dos líneas celulares juntas
+
+### Normalización
+    
+```{r exprSetNormAll}
+if (file.exists(file.path(outputPath, paste(prefix,
+                          "exprSet.All.Norm.rds", sep = ".")))) {
+  
+  message(paste("Load exprSet object with Normalized data from",
+                file.path(outputPath, paste(prefix,
+                          "exprSet.All.Norm.rds", sep = "."))))
+  
+  exprSet.All <- readRDS(file = file.path(outputPath, paste(prefix,
+                                          "exprSet.All.Norm.rds", sep = ".")))
+} else {
+  
+  exprSet.All <- expresso(rawDataAffy,
+                      bg.correct = TRUE,
+                      bgcorrect.method = "rma",
+                      normalize = TRUE,
+                      normalize.method = "quantiles",
+                      pmcorrect.method = "pmonly",
+                      summary.method = "medianpolish",
+                      verbose = TRUE)
+  
+  saveRDS(exprSet.All, file = file.path(outputPath, paste(prefix,
+                                    "exprSet.All.Norm.rds", sep = ".")))
+}
+```
+
+
+```{r boxplotsBaseAll, fig.width=12, fig.height=4}
+par(mfrow = c(1, 2), mar = c(5.1, 4.1, 1.4, 1.4), mgp=c(2.1, 1, 0))
+
+boxplot(rawDataAffy,
+		 col = cols$colorFill[as.factor(dfTargets$CellLine)],
+		 cex.axis = 0.84, las = 2, main = "Boxplots without normalization",
+		 cex.main = 0.99, ylab = "Gene expression")
+mtext("A", side = 2, adj=2, las=1, padj = -11.5, font = 2)
+
+legend("topright", legend = levels(as.factor(dfTargets$CellLine)),
+       fill = cols$colorFill, cex = 0.8, bg = "white")
+
+par(mar = c(5.1, 1.4, 1.4, 2.1))
+exprseset <- as.data.frame(exprs(exprSet.All))
+boxplot(exprseset,
+		 col = cols$colorFill[as.factor(dfTargets$CellLine)],
+		 main = "Boxplots with normalization", cex.main = 0.99,
+		 cex.axis = 0.84, las = 2)
+mtext("B", side = 2, adj = 2, las = 1, padj = -11.5, font = 2)
+```
+
+
+```{r histIntensitiesAll, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(4.1, 4.1, 1.4, 1.8), mgp=c(2.1, 1, 0))
+hist(rawDataAffy, lty = rep(1, nrow(dfTargets)),
+     col = cols$colorPoints[as.factor(dfTargets$CellLine)],
+     xlab = "Intensity", ylab = "Density", cex.main = 0.99,
+     main = "Intensities without normalization")
+mtext("C", side = 2, adj=2, las=1, padj = -13, font = 2)
+grid()
+legend("topright", legend = levels(as.factor(dfTargets$CellLine)),
+       lty = rep(1, nrow(dfTargets)), col = cols$colorPoints, cex = 0.85,
+       bg = "white")
+
+par(mar = c(4.1, 1.8, 1.4, 2.1))
+plotDensities(exprSet.All, legend = FALSE,
+              col = cols$colorPoints[as.factor(dfTargets$CellLine)])
+title("Intensities with normalization", cex.main = 0.99)
+grid()
+legend("topright", legend = levels(as.factor(dfTargets$CellLine)),
+       lty = rep(1, nrow(dfTargets)), col = cols$colorPoints, cex = 0.85,
+       bg = "white")
+mtext("D", side = 2, adj = 2, las = 1, padj = -13, font = 2)
+```
+
+
+```{r MAplotALL1, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(4.1, 4.1, 2.1, 1.8), mgp=c(2.1, 1, 0))
+
+MAplot(rawDataAffy, which = 1, cex = 1, pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+mtext("A", side = 2, adj=2, las=1, padj = -13.2, font = 2)
+
+par(mar = c(4.1, 1.8, 2.1, 2.1))
+MAplotExprSet(exprSet.All, array = 1, pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+mtext("B", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+```
+
+
+```{r MAplotALL2, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(4.1, 4.1, 2.1, 1.8), mgp=c(2.1, 1, 0))
+
+MAplot(rawDataAffy, which = 4, cex = 1, pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+mtext("C", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+
+par(mar = c(4.1, 1.8, 2.1, 2.1))
+MAplotExprSet(exprSet.All, array = 4, pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+mtext("D", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+```
+
+```{r pcaAllLines, fig.width=12, fig.height=4.2}
+allPCA <- prcomp(t(exprs(exprSet.All)))
+
+pca1 <- plotPCA(allPCA, col.points = as.factor(dfTargets$CellLine),
+        shape.points = dfTargets$Condition, palette = cols$colorPoints, 
+        legend.col = "Cell line", legend.shape = "Condition", 
+        title = "PCA with all cell lines")
+
+pca2 <- fviz_pca_ind(allPCA, col.ind = as.factor(dfTargets$CellLine),
+             palette = cols$colorPoints,
+             geom = "text", legend.title = "Cell line", repel = TRUE,
+             title = "PCA with all cell lines (samples)") + 
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+ggarrange(pca1, pca2, labels = c("A", "B"), font.label = list(size = 12),
+          ncol = 2, nrow = 1)
+```
+
+```{r matrixDistanceHeatmapAll, fig.width=8}
+sampleDists <- dist(t(exprs(exprSet.All)))
+
+pheatmap(as.matrix(sampleDists),
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         main = "Distance Matrix (all samples)",
+         color = cols$heatmap11,
+         annotation_col = dfTargets[, "CellLine", drop = FALSE],
+         annotation_row = dfTargets[, "CellLine", drop = FALSE],
+         cellwidth = 22)
+```
+
+### Expresión diferencial de genes 
+
+```{r filterFeaturesAll1}
+## Filtrado de genes menos variables
+esetIQR.All <- varFilter(exprSet.All, var.func = IQR, 
+                         var.cutoff = 0.5, filterByQuantile = TRUE)
+
+cat(">> Without IQR filter: ", dim(exprs(exprSet.All)), "\n")
+cat(">> With IQR filter: ", dim(exprs(esetIQR.All)), "\n")
+```
+
+```{r exprDiffAll}
+cond <- as.factor(dfTargets$Condition)
+design <- model.matrix(~0 + cond)
+
+lmfit <- lmFit(esetIQR.All, design)
+
+cont.matrix <- makeContrasts(DMSOvsSAHM1 = condDMSO-condSAHM1, levels = design) 
+
+lmfit.cont <- contrasts.fit(lmfit, cont.matrix)
+
+lmfit.cont.ebayes <- eBayes(lmfit.cont)
+
+## Annotation genes
+dfAnnotations <- annotateMatrix(rownames(lmfit.cont.ebayes), 
+                                hgu133plus2.db, c("ALIAS", "ENSEMBL", "SYMBOL"))
+lmfit.cont.ebayes$genes <- dfAnnotations
+```
+
+Como se puede observar, no hay ningún gen diferencialmente expresado con una 
+significancia estadística suficiente. 
+
+```{r}
+toptableIQR <- topTable(lmfit.cont.ebayes,
+                        number = dim(exprs(esetIQR.All))[1], 
+                        adjust.method = "BH", sort.by = "p")
+
+subset(toptableIQR, toptableIQR$adj.P.Val <= 0.05)
+```
+
+## Segunda aproximación: normalización de las líneas celulares por separado
+
+```{r dfMetadata}
+dfMetadata.KOPTK1 <- dfTargets %>% filter(CellLine == "KOPT-K1")
+rownames(dfMetadata.KOPTK1) <- dfMetadata.KOPTK1$FileName
+
+dfMetadata.HPBALL <- dfTargets %>% filter(CellLine == "HPB-ALL")
+rownames(dfMetadata.HPBALL) <- dfMetadata.HPBALL$FileName
+```
+
+### Normalización de KOPT-K1
+
+```{r exprSetNormKOPT-K1}
+if (file.exists(file.path(outputPath, paste(prefix,
+                          "exprSet.KOPT-K1.Norm.rds", sep = ".")))) {
+  
+  message(paste("Load exprSet KOPT-K1 object with Normalized data from", 
+                file.path(outputPath, paste(prefix,
+                          "exprSet.KOPT-K1.Norm.rds", sep = "."))))
+  
+  exprSet.KOPTK1 <- readRDS(file = file.path(outputPath, paste(prefix, 
+                                   "exprSet.KOPT-K1.Norm.rds", sep = ".")))
+  
+} else {
+  exprSet.KOPTK1 <- expresso(rawDataAffy[, dfTargets$CellLine == "KOPT-K1"],
+                      bg.correct = TRUE,
+                      bgcorrect.method = "rma",
+                      normalize = TRUE, 
+                      normalize.method = "quantiles", 
+                      pmcorrect.method = "pmonly", 
+                      summary.method = "medianpolish",
+                      verbose = TRUE)
+  
+  saveRDS(exprSet.KOPTK1, file = file.path(outputPath, paste(prefix, 
+                                 "exprSet.KOPT-K1.Norm.rds", sep = ".")))
+}
+```
+
+```{r boxplotsBaseKOPTK1, fig.width=12, fig.height=4}
+par(mfrow = c(1, 2), mar = c(5.1, 4.1, 1.4, 1.4), mgp=c(2.1, 1, 0))
+
+boxplot(rawDataAffy[, dfTargets$CellLine == "KOPT-K1"],
+        col = cols$colorFillDrug[as.factor(dfMetadata.KOPTK1$Condition)],
+        cex.axis = 0.84, las = 2, main = "Boxplots without normalization (KOPT-K1)",
+		 cex.main = 0.99, ylab = "Gene expression")
+
+mtext("A", side = 2, adj=2, las=1, padj = -11.5, font = 2)
+
+legend("topright", legend = levels(as.factor(dfMetadata.KOPTK1$Condition)),
+       fill = cols$colorFillDrug, cex = 0.8, bg = "white")
+
+par(mar = c(5.1, 1.4, 1.4, 2.1))
+exprseset <- as.data.frame(exprs(exprSet.KOPTK1))
+
+boxplot(exprseset,
+		 col = cols$colorFillDrug[as.factor(dfMetadata.KOPTK1$Condition)],
+		 main = "Boxplots with normalization (KOPT-K1)", cex.main = 0.99,
+		 cex.axis = 0.84, las = 2)
+
+mtext("B", side = 2, adj = 2, las = 1, padj = -11.5, font = 2)
+```
+
+```{r histIntensitiesKOPTK1, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(4.1, 4.1, 1.4, 1.8), mgp=c(2.1, 1, 0))
+
+hist(rawDataAffy[, dfTargets$CellLine == "KOPT-K1"], 
+     lty = rep(1, nrow(dfMetadata.KOPTK1)), 
+     col = cols$colorPointsDrug[as.factor(dfMetadata.KOPTK1$Condition)],
+     xlab = "Intensity", ylab = "Density", cex.main = 0.99,
+     main = "Intensities without normalization (KOPT-K1)")
+mtext("C", side = 2, adj=2, las=1, padj = -13, font = 2)
+grid()
+legend("topright", levels(as.factor(dfMetadata.HPBALL$Condition)),
+       lty = rep(1, nrow(dfMetadata.KOPTK1)),
+       col = cols$colorPointsDrug, cex = 0.85, bg = "white")
+
+par(mar = c(4.1, 1.8, 1.4, 2.1))
+
+plotDensities(exprSet.KOPTK1, legend = FALSE, 
+              col = cols$colorPointsDrug[as.factor(dfMetadata.KOPTK1$Condition)])
+title("Intensities with normalization (KOPT-K1)", cex.main = 0.99)
+grid()
+legend("topright", levels(as.factor(dfMetadata.KOPTK1$Condition)),
+       lty = rep(1, nrow(dfMetadata.KOPTK1)),
+       col = cols$colorPointsDrug, cex = 0.85,
+       bg = "white")
+mtext("D", side = 2, adj = 2, las = 1, padj = -13, font = 2)
+```
+
+
+```{r MAplotKOPT1, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(4.1, 4.1, 2.1, 1.8), mgp = c(2.1, 1, 0))
+
+MAplot(rawDataAffy[, dfTargets$CellLine == "KOPT-K1"], which = 1, cex = 1, 
+       pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+
+mtext("A", side = 2, adj=2, las=1, padj = -13.2, font = 2)
+
+par(mar = c(4.1, 1.8, 2.1, 2.1))
+
+MAplotExprSet(exprSet.KOPTK1, array = 1, pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+mtext("B", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+```
+
+```{r MAplotKOPT2, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(4.1, 4.1, 2.1, 1.8), mgp = c(2.1, 1, 0))
+
+MAplot(rawDataAffy[, dfTargets$CellLine == "KOPT-K1"], which = 4, cex = 1, 
+       pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+
+mtext("C", side = 2, adj=2, las=1, padj = -13.2, font = 2)
+
+par(mar = c(4.1, 1.8, 2.1, 2.1))
+
+MAplotExprSet(exprSet.KOPTK1, array = 4, pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+mtext("D", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+```
+
+```{r pcaKOPT-K1, fig.width=12, fig.height=4.2}
+koptk1PCA <- prcomp(t(exprs(exprSet.KOPTK1)))
+
+pca1 <- plotPCA(koptk1PCA, col.points = as.factor(dfMetadata.KOPTK1$Condition),
+              shape.points = dfMetadata.KOPTK1$CellLine, 
+              palette = cols$colorPointsDrug, legend.col = "Condition", 
+              legend.shape = "Cell line", title = "PCA KOPT-K1")
+
+pca2 <- fviz_pca_ind(koptk1PCA, col.ind = as.factor(dfMetadata.KOPTK1$Condition),
+             palette = cols$colorPointsDrug,
+             geom = "text", legend.title = "Condition", repel = TRUE,
+             title = "PCA KOPT-K1 (samples)") + 
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+ggarrange(pca1, pca2, labels = c("A", "B"), font.label = list(size = 12),
+          ncol = 2, nrow = 1)
+
+```
+
+### Normalización de HPB-ALL
+
+```{r exprSetNormHPB-ALL}
+if (file.exists(file.path(outputPath, paste(prefix, 
+                          "exprSet.HPB-ALL.Norm.rds", sep = ".")))) {
+  
+  message(paste("Load exprSet HPB-ALL object with Normalized data from", 
+                file.path(outputPath, paste(prefix,
+                          "exprSet.HPB-ALL.Norm.rds", sep = "."))))
+  
+  exprSet.HPBALL <- readRDS(file = file.path(outputPath, paste(prefix, 
+                            "exprSet.HPB-ALL.Norm.rds", sep = ".")))
+  
+} else {
+  
+  exprSet.HPBALL <- expresso(rawDataAffy[, dfTargets$CellLine == "HPB-ALL"],
+                              bg.correct = TRUE,
+                              bgcorrect.method="rma",
+                              normalize = TRUE, 
+                              normalize.method = "quantiles", 
+                              pmcorrect.method = "pmonly", 
+                              summary.method = "medianpolish",
+                              verbose = TRUE)
+  
+  saveRDS(exprSet.HPBALL, file = file.path(outputPath, paste(prefix, 
+                                      "exprSet.HPB-ALL.Norm.rds", sep = ".")))
+  
+}
+```
+
+```{r boxplotsBaseHPBALL, fig.width=12, fig.height=4}
+par(mfrow = c(1, 2), mar = c(5.1, 4.1, 1.4, 1.4), mgp=c(2.1, 1, 0))
+
+boxplot(rawDataAffy[, dfTargets$CellLine == "HPB-ALL"],
+		 col = cols$colorFillDrug[as.factor(dfMetadata.HPBALL$Condition)],
+		 cex.axis = 0.84, las = 2, main = "Boxplots without normalization (HPB-ALL)",
+		 cex.main = 0.99, ylab = "Gene expression")
+mtext("A", side = 2, adj=2, las=1, padj = -11.5, font = 2)
+
+legend("topright", legend = levels(as.factor(dfMetadata.HPBALL$Condition)),
+       fill = cols$colorFillDrug, cex = 0.8, bg = "white")
+
+par(mar = c(5.1, 1.4, 1.4, 2.1))
+exprseset <- as.data.frame(exprs(exprSet.HPBALL))
+boxplot(exprseset,
+		 col = cols$colorFillDrug[as.factor(dfMetadata.HPBALL$Condition)],
+		 main = "Boxplots with normalization (HPB-ALL)", cex.main = 0.99,
+		 cex.axis = 0.84, las = 2)
+mtext("B", side = 2, adj = 2, las = 1, padj = -11.5, font = 2)
+```
+
+
+```{r histIntensitiesHPBALL, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(4.1, 4.1, 1.4, 1.8), mgp=c(2.1, 1, 0))
+
+hist(rawDataAffy[, dfTargets$CellLine == "HPB-ALL"], 
+     lty = rep(1, length(sampleNames)), 
+     col = cols$colorPointsDrug[as.factor(dfMetadata.HPBALL$Condition)],
+     xlab = "Intensity", ylab = "Density", cex.main = 0.99,
+     main = "Intensities without normalization (HPB-ALL)")
+grid()
+legend("topright", levels(as.factor(dfMetadata.HPBALL$Condition)),
+       lty = rep(1, length(unique(dfMetadata.HPBALL$Condition))),
+       col = cols$colorPointsDrug, cex = 0.85, bg = "white")
+mtext("C", side = 2, adj=2, las=1, padj = -13, font = 2)
+
+par(mar = c(4.1, 1.8, 1.4, 2.1))
+
+plotDensities(exprSet.HPBALL, legend = FALSE, 
+              col = cols$colorPointsDrug[as.factor(dfMetadata.HPBALL$Condition)])
+grid()
+title("Intensities with normalization (HPB-ALL)", cex.main = 0.99)
+legend("topright", levels(as.factor(dfMetadata.HPBALL$Condition)),
+       lty = rep(1, length(unique(dfMetadata.HPBALL$Condition))),
+       col = cols$colorPointsDrug, cex = 0.85,
+       bg = "white")
+mtext("D", side = 2, adj = 2, las = 1, padj = -13, font = 2)
+```
+
+```{r MAplotHPBALL1, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(4.1, 4.1, 2.1, 1.8), mgp = c(2.1, 1, 0))
+
+MAplot(rawDataAffy[, dfTargets$CellLine == "HPB-ALL"], which = 1, cex = 1, 
+       pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+
+mtext("A", side = 2, adj=2, las=1, padj = -13.2, font = 2)
+
+par(mar = c(4.1, 1.8, 2.1, 2.1))
+
+MAplotExprSet(exprSet.HPBALL, array = 1, pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+mtext("B", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+```
+
+```{r MAplotHPBALL2, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(4.1, 4.1, 2.1, 1.8), mgp = c(2.1, 1, 0))
+
+MAplot(rawDataAffy[, dfTargets$CellLine == "HPB-ALL"], which = 2, cex = 1, 
+       pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+
+mtext("C", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+
+par(mar = c(4.1, 1.8, 2.1, 2.1))
+
+MAplotExprSet(exprSet.HPBALL, array = 2, pch = 20, col = rgb(0.24, 0.49, 0.89, 0.5))
+mtext("D", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+```
+
+
+
+```{r pcaHPBALL, fig.width=12, fig.height=4.2}
+hpballPCA <- prcomp(t(exprs(exprSet.HPBALL)))
+
+pca1 <- plotPCA(hpballPCA, col.points = as.factor(dfMetadata.HPBALL$Condition),
+              shape.points = dfMetadata.HPBALL$CellLine, 
+              palette = cols$colorPointsDrug, legend.col = "Condition", 
+              legend.shape = "Cell line", title = "PCA HPB-ALL")
+
+pca2 <- fviz_pca_ind(hpballPCA, col.ind = as.factor(dfMetadata.HPBALL$Condition),
+             palette = cols$colorPointsDrug,
+             geom = "text", legend.title = "Condition", repel = TRUE,
+             title = "PCA HPB-ALL (samples)") + 
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+ggarrange(pca1, pca2, labels = c("A", "B"), font.label = list(size = 12),
+          ncol = 2, nrow = 1)
+```
+
+
+
+```{r}
+sampleDists <- dist(t(exprs(exprSet.HPBALL)[, dfMetadata.HPBALL$Condition == "DMSO"]))
+
+pheatmap(as.matrix(sampleDists),
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         main = "Distance Matrix between samples",
+         color = cols$heatmap11,
+         cellwidth = 40, cellheight = 40)
+```
+
+### Anotación de las sondas
+
+```{r listKeys, echo=FALSE}
+keytypes(hgu133plus2.db)
+```
+
+```{r annotationsDbi}
+## nombre de todas las sondas
+probenames.All <- rownames(exprSet.All)
+
+genesMetadata.All <- annotateMatrix(probenames.All, hgu133plus2.db, 
+                                    c("ALIAS", "ENSEMBL", "ENTREZID", 
+                                      "SYMBOL", "GO"))
+```
+
+### Análisis de expresión diferencial
+
+#### KOPT-K1
+
+```{r filterFeaturesKOPTK1}
+esetIQR.KOPTK1 <- varFilter(exprSet.KOPTK1, var.func = IQR, 
+                            var.cutoff = 0.5, filterByQuantile = TRUE)
+
+cat(">> Without IQR filter: ", dim(exprs(exprSet.KOPTK1)), "\n")
+cat(">> With IQR filter: ", dim(exprs(esetIQR.KOPTK1)), "\n")
+```
+
+```{r exprDiffKOPTK1}
+cond <- as.factor(dfMetadata.KOPTK1$Condition)
+
+design.KOPTK1 <- model.matrix(~0 + cond)
+
+lmfit.KOPTK1 <- lmFit(esetIQR.KOPTK1, design.KOPTK1)
+
+cont.matrix.KOPTK1 <- makeContrasts(DMSOvsSAHM1 = condDMSO-condSAHM1, 
+                                    levels = design.KOPTK1) 
+
+lmfit.cont.KOPTK1 <- contrasts.fit(lmfit.KOPTK1, cont.matrix.KOPTK1)
+
+lmfit.cont.ebayes.KOPTK1 <- eBayes(lmfit.cont.KOPTK1)
+```
+
+```{r}
+dfAnnotations <- annotateMatrix(rownames(lmfit.cont.ebayes.KOPTK1), 
+                                hgu133plus2.db, c("ALIAS", "ENSEMBL", "SYMBOL"))
+
+lmfit.cont.ebayes.KOPTK1$genes <- dfAnnotations
+```
+
+**Top expressed genes**
+
+```{r topExprGenesKOPTK1}
+toptableIQR.KOPTK1 <- topTable(lmfit.cont.ebayes.KOPTK1, 
+                               number = dim(exprs(esetIQR.KOPTK1))[1], 
+                               adjust.method = "BH", sort.by = "logFC")
+
+tableIQR.005.KOPTK1 <- subset(toptableIQR.KOPTK1, 
+                              toptableIQR.KOPTK1$adj.P.Val <= 0.05)
+
+tableIQR.005.KOPTK1 <- tableIQR.005.KOPTK1[order(tableIQR.005.KOPTK1$logFC, 
+                                                 decreasing = TRUE),]
+
+DT::datatable(tableIQR.005.KOPTK1)
+```
+
+```{r}
+print(paste(">> Número de sondas diferencialmente expresadas:", 
+            dim(tableIQR.005.KOPTK1)[1]))
+
+dupliGenes <- duplicated(tableIQR.005.KOPTK1[, "SYMBOL"])
+
+print(paste(">> Número de genes (sin duplicados) diferencialmente expresadas:",
+            dim(tableIQR.005.KOPTK1[!dupliGenes, ])[1]))
+```
+
+```{r}
+tableIQR.005.KOPTK1.logfold.probes <-  subset(toptableIQR.KOPTK1, 
+                                              toptableIQR.KOPTK1$logFC >= log2(1.5) | 
+                                              toptableIQR.KOPTK1$logFC <= -log2(1.5))
+
+tableIQR.005.KOPTK1.logfold.probes <- tableIQR.005.KOPTK1.logfold.probes[order(
+  tableIQR.005.KOPTK1.logfold.probes$logFC, decreasing = FALSE), ]
+
+print(paste(">> Número de sondas diferencialmente expresadas:", 
+            dim(tableIQR.005.KOPTK1.logfold.probes)[1]))
+
+dupliGenes <- duplicated(tableIQR.005.KOPTK1.logfold.probes[, "SYMBOL"])
+tableIQR.005.KOPTK1.logfold.probes.nodup <- tableIQR.005.KOPTK1.logfold.probes[!dupliGenes, ]
+tableIQR.005.KOPTK1.logfold.probes.nodup <- tableIQR.005.KOPTK1.logfold.probes.nodup[!is.na(tableIQR.005.KOPTK1.logfold.probes.nodup$SYMBOL),]
+
+print(paste(">> Número de genes (sin duplicados ni NAs) diferencialmente expresadas:", 
+            dim(tableIQR.005.KOPTK1.logfold.probes.nodup)[1]))
+```
+
+```{r}
+tableIQR.005.KOPTK1.logfold.probes.2 <-  subset(toptableIQR.KOPTK1, 
+                                                toptableIQR.KOPTK1$logFC >= log2(2) | 
+                                                toptableIQR.KOPTK1$logFC <= -log2(2))
+
+tableIQR.005.KOPTK1.logfold.probes.2 <- tableIQR.005.KOPTK1.logfold.probes.2[order(
+  tableIQR.005.KOPTK1.logfold.probes.2$logFC, decreasing = FALSE), ]
+
+print(paste(">> Número de sondas diferencialmente expresadas:", 
+            dim(tableIQR.005.KOPTK1.logfold.probes.2)[1]))
+
+dupliGenes <- duplicated(tableIQR.005.KOPTK1.logfold.probes.2[, "SYMBOL"])
+tableIQR.005.KOPTK1.logfold.probes.nodup.2 <- tableIQR.005.KOPTK1.logfold.probes.2[!dupliGenes, ]
+tableIQR.005.KOPTK1.logfold.probes.nodup.2 <- tableIQR.005.KOPTK1.logfold.probes.nodup.2[!is.na(tableIQR.005.KOPTK1.logfold.probes.nodup.2$SYMBOL),]
+
+# -1 correspondiente a la entrada con NA en symbol
+print(paste(">> Número de genes (sin duplicados ni NAs) diferencialmente expresadas:", 
+            dim(tableIQR.005.KOPTK1.logfold.probes.nodup.2)[1]))
+```
+
+```{r}
+print(xtable(tableIQR.005.KOPTK1.logfold.probes.nodup[1:10, c("SYMBOL", "logFC", 
+                                                        "AveExpr", "t", 
+                                                        "adj.P.Val")], 
+             type = "latex"), file = file.path(tablesTexPaths, "DEG_KOPTK1.tex"))
+```
+
+
+#### HPB-ALL
+
+```{r filterFeaturesHPBALL}
+## únicamente se usarán los genes más variables, con un IQR >= 0.5
+esetIQR.HPBALL <- varFilter(exprSet.HPBALL, var.func = IQR, 
+                            var.cutoff = 0.5, filterByQuantile = TRUE)
+
+cat(">> Without IQR filter: ", dim(exprs(exprSet.HPBALL)), "\n")
+cat(">> With IQR filter: ", dim(exprs(esetIQR.HPBALL)), "\n")
+```
+
+```{r exprDiffHPALL}
+cond <- as.factor(esetIQR.HPBALL$Condition)
+
+design.HPBALL <- model.matrix(~0 + cond)
+
+lmfit.HPBALL <- lmFit(esetIQR.HPBALL, design.HPBALL)
+
+cont.matrix.HPBALL <- makeContrasts(DMSOvsSAHM1 = condDMSO-condSAHM1, levels = design.HPBALL) 
+
+lmfit.cont.HPBALL <- contrasts.fit(lmfit.HPBALL, cont.matrix.HPBALL)
+
+lmfit.cont.ebayes.HPBALL <- eBayes(lmfit.cont.HPBALL)
+```
+
+```{r annotateMatrixHPALL, warning=FALSE, message=FALSE}
+dfAnnotations <- annotateMatrix(rownames(lmfit.cont.ebayes.HPBALL), 
+                                hgu133plus2.db, c("ALIAS", "ENSEMBL", "SYMBOL"))
+
+lmfit.cont.ebayes.HPBALL$genes <- dfAnnotations
+```
+
+**Top DEGs**
+
+```{r}
+toptableIQR.HPBALL <- topTable(lmfit.cont.ebayes.HPBALL, 
+                               number = dim(exprs(esetIQR.HPBALL))[1], 
+                               adjust.method = "BH", sort.by = "logFC")
+
+tableIQR.005.HPBALL <- subset(toptableIQR.HPBALL, 
+                              toptableIQR.HPBALL$adj.P.Val <= 0.05)
+
+tableIQR.005.HPBALL <- tableIQR.005.HPBALL[order(tableIQR.005.HPBALL$logFC, 
+                                                 decreasing = TRUE),]
+DT::datatable(tableIQR.005.HPBALL)
+```
+
+```{r}
+print(paste(">> Número de sondas diferencialmente expresadas:", 
+            dim(tableIQR.005.HPBALL)[1]))
+
+dupliGenes <- duplicated(tableIQR.005.HPBALL[, "SYMBOL"]) 
+
+print(paste(">> Número de genes (sin duplicados) diferencialmente expresadas:",
+            dim(tableIQR.005.HPBALL[!dupliGenes, ])[1]))
+```
+
+```{r}
+tableIQR.005.HPBALL.logfold.probes <- subset(tableIQR.005.HPBALL, 
+                                       tableIQR.005.HPBALL$logFC >= log2(1.5) | 
+                                       tableIQR.005.HPBALL$logFC <= -log2(1.5))
+
+tableIQR.005.HPBALL.logfold.probes <- tableIQR.005.HPBALL.logfold.probes[order(tableIQR.005.HPBALL.logfold.probes$logFC, 
+                                                         decreasing = FALSE), ]
+
+print(paste(">> Número de sondas diferencialmente expresadas:", 
+            dim(tableIQR.005.HPBALL.logfold.probes)[1]))
+
+dupliGenes <- duplicated(tableIQR.005.HPBALL.logfold.probes[, "SYMBOL"])
+
+tableIQR.005.HPBALL.logfold.probes.nodup <- tableIQR.005.HPBALL.logfold.probes[!dupliGenes, ]
+tableIQR.005.HPBALL.logfold.probes.nodup <- tableIQR.005.HPBALL.logfold.probes.nodup[!is.na(tableIQR.005.HPBALL.logfold.probes.nodup$SYMBOL),]
+
+print(paste(">> Número de genes (sin duplicados ni NAs) diferencialmente expresadas:", 
+            dim(tableIQR.005.HPBALL.logfold.probes.nodup)[1]))
+```
+
+```{r}
+tableIQR.005.HPBALL.logfold.probes.2 <- subset(tableIQR.005.HPBALL, 
+                                             tableIQR.005.HPBALL$logFC >= log2(2) | 
+                                             tableIQR.005.HPBALL$logFC <= -log2(2))
+
+tableIQR.005.HPBALL.logfold.probes.2 <- tableIQR.005.HPBALL.logfold.probes.2[order(tableIQR.005.HPBALL.logfold.probes.2$logFC, 
+                                                                               decreasing = FALSE), ]
+
+print(paste(">> Número de sondas diferencialmente expresadas:", 
+            dim(tableIQR.005.HPBALL.logfold.probes.2)[1]))
+
+dupliGenes <- duplicated(tableIQR.005.HPBALL.logfold.probes.2[, "SYMBOL"])
+
+tableIQR.005.HPBALL.logfold.probes.nodup.2 <- tableIQR.005.HPBALL.logfold.probes.2[!dupliGenes, ]
+tableIQR.005.HPBALL.logfold.probes.nodup.2 <- tableIQR.005.HPBALL.logfold.probes.nodup.2[!is.na(tableIQR.005.HPBALL.logfold.probes.nodup.2$SYMBOL),]
+
+print(paste(">> Número de genes (sin duplicados ni NAs) diferencialmente expresadas:", 
+            dim(tableIQR.005.HPBALL.logfold.probes.nodup.2)[1]))
+```
+
+
+```{r}
+## tabla para documento latex
+print(xtable(tableIQR.005.HPBALL.logfold.probes.nodup[1:10, c("SYMBOL", "logFC", 
+                                                        "AveExpr", "t", 
+                                                        "adj.P.Val")], 
+             type = "latex"), file = file.path(tablesTexPaths, "DEG_HPBALL.tex"))
+```
+
+#### Comparación entre líneas celulares
+
+```{r volcanoPlots, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(4.1, 4.1, 2.1, 1.8), mgp = c(2.1, 1, 0))
+volcanoplot(lmfit.cont.ebayes.KOPTK1, main = "Volcano plot of KOPT-K1 DEGs",
+            cex.main = 0.99)
+volcanoplotCustom(lmfit.cont.ebayes.KOPTK1, coef = 1, style = "p-value", 
+                  xLim = log2(1.5), yLim = -log10(0.05))
+
+mtext("A", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+
+par(mar = c(4.1, 1.8, 2.1, 2.1))
+volcanoplot(lmfit.cont.ebayes.HPBALL, main = "Volcano plot of HPB-ALL DEGs",
+            cex.main = 0.99)
+volcanoplotCustom(lmfit.cont.ebayes.HPBALL, coef = 1, style = "p-value", 
+                  xLim =  log2(1.5), yLim = -log10(0.05), 
+                  pos.legend = "bottomleft")
+
+mtext("B", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+```
+
+```{r vennDiagram, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(1.1, 4.1, 2.1, 1.8), mgp = c(2.1, 1, 0))
+vennDiagramGenes(tableIQR.005.HPBALL.logfold.probes.nodup, 
+                 tableIQR.005.KOPTK1.logfold.probes.nodup, 
+                 names = c("HPB-ALL", "KOPT-K1"),
+                 colors = cols$colorFill, 
+                 title = "Venn Diagram with unique genes with logFC = 1.5")
+mtext("A", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+
+par(mar = c(4.1, 1.8, 2.1, 2.1))
+vennDiagramGenes(tableIQR.005.HPBALL.logfold.probes.nodup.2, 
+                 tableIQR.005.KOPTK1.logfold.probes.nodup.2, 
+                 names = c("HPB-ALL", "KOPT-K1"),
+                 colors = cols$colorFill, 
+                 title = "Venn Diagram with unique genes with logFC = 2")
+mtext("B", side = 2, adj = 2, las = 1, padj = -13.2, font = 2)
+```
+
+```{r}
+intersect(tableIQR.005.HPBALL.logfold.probes.nodup.2$SYMBOL, tableIQR.005.KOPTK1.logfold.probes.nodup.2$SYMBOL)
+```
+
+```{r testViolinPlotsHES1, fig.width=12, fig.height=7}
+## KOPT-K1
+HES1.metadata <- tableIQR.005.KOPTK1.logfold.probes[tableIQR.005.KOPTK1.logfold.probes$SYMBOL %in% "HES1",]
+HES1.exprs <- searchGeneExprSet("HES1", exprSet.KOPTK1, genesMetadata.All)
+
+probeName <- rownames(HES1.metadata)
+
+df <- data.frame(reshape::melt(HES1.exprs[probeName[1],]), 
+                 Condition = dfMetadata.KOPTK1$Condition)
+p1 <- ggplot(df, aes(x = Condition, y = value, fill = Condition)) + 
+  scale_fill_manual(values = cols$colorFillDrug) + 
+  geom_violin(trim = FALSE) + 
+  geom_jitter(shape = 20, position = position_jitter(0.2)) + 
+  geom_boxplot(width = 0.1) + ggtitle(paste(HES1.metadata[1, "SYMBOL"], " (",
+                                            rownames(HES1.metadata)[1], ") ",
+                                            " in KOPT-K1", sep = "")) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+df <- data.frame(reshape::melt(HES1.exprs[probeName[2],]), 
+                 Condition = dfMetadata.KOPTK1$Condition)
+p2 <- ggplot(df, aes(x = Condition, y = value, fill = Condition)) + 
+  scale_fill_manual(values = cols$colorFillDrug) + 
+  geom_violin(trim = FALSE) + 
+  geom_jitter(shape = 20, position = position_jitter(0.2)) + 
+  geom_boxplot(width = 0.1) + ggtitle(paste(HES1.metadata[2, "SYMBOL"], " (",
+                                            rownames(HES1.metadata)[2], ") ",
+                                            " in KOPT-K1", sep = "")) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+## HPB-ALL
+HES1.metadata <- tableIQR.005.HPBALL.logfold.probes[tableIQR.005.HPBALL.logfold.probes$SYMBOL %in% "HES1",]
+HES1.exprs <- searchGeneExprSet("HES1", exprSet.HPBALL, genesMetadata.All)
+
+probeName <- rownames(HES1.metadata)
+
+df <- data.frame(reshape::melt(HES1.exprs[probeName[1],]), 
+                 Condition = dfMetadata.HPBALL$Condition)
+p3 <- ggplot(df, aes(x = Condition, y = value, fill = Condition)) + 
+  scale_fill_manual(values = cols$colorFillDrug) + 
+  geom_violin(trim = FALSE) + 
+  geom_jitter(shape = 20, position = position_jitter(0.2)) + 
+  geom_boxplot(width = 0.1) + ggtitle(paste(HES1.metadata[2, "SYMBOL"], " (",
+                                            rownames(HES1.metadata)[2], ") ",
+                                            " in HPB-ALL", sep = "")) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+df <- data.frame(reshape::melt(HES1.exprs[probeName[2],]), 
+                 Condition = dfMetadata.HPBALL$Condition)
+p4 <- ggplot(df, aes(x = Condition, y = value, fill = Condition)) + 
+  scale_fill_manual(values = cols$colorFillDrug) + 
+  geom_violin(trim = FALSE) + 
+  geom_jitter(shape = 20, position = position_jitter(0.2)) + 
+  geom_boxplot(width = 0.1) + ggtitle(paste(HES1.metadata[2, "SYMBOL"], " (",
+                                            rownames(HES1.metadata)[2], ") ",
+                                            " in HPB-ALL", sep = "")) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+ggarrange(p1, p2, p3, p4, labels = c("A", "B", "C", "D"), font.label = list(size = 12),
+          ncol = 2, nrow = 2)
+```
+
+```{r testViolinPlotsHES4, fig.width=12, fig.height=4}
+## KOPT-K1
+HES4.metadata <- tableIQR.005.KOPTK1.logfold.probes[tableIQR.005.KOPTK1.logfold.probes$SYMBOL %in% "HES4",]
+HES4.exprs <- searchGeneExprSet("HES4", exprSet.KOPTK1, genesMetadata.All)
+
+probeName <- rownames(HES4.metadata)
+
+df <- data.frame(reshape::melt(HES4.exprs[probeName[1],]), 
+                 Condition = dfMetadata.KOPTK1$Condition)
+p1 <- ggplot(df, aes(x = Condition, y = value, fill = Condition)) + 
+  scale_fill_manual(values = cols$colorFillDrug) + 
+  geom_violin(trim = FALSE) + 
+  geom_jitter(shape = 20, position = position_jitter(0.2)) + 
+  geom_boxplot(width = 0.1) + ggtitle(paste(HES4.metadata[1, "SYMBOL"], " (",
+                                            rownames(HES4.metadata)[1], ") ",
+                                            " in KOPT-K1", sep = "")) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+## HPB-ALL
+HES4.metadata <- tableIQR.005.HPBALL.logfold.probes[tableIQR.005.HPBALL.logfold.probes$SYMBOL %in% "HES4",]
+HES4.exprs <- searchGeneExprSet("HES4", exprSet.HPBALL, genesMetadata.All)
+
+probeName <- rownames(HES4.metadata)
+
+df <- data.frame(reshape::melt(HES4.exprs[probeName[1],]),
+                 Condition = dfMetadata.HPBALL$Condition)
+p2 <- ggplot(df, aes(x = Condition, y = value, fill = Condition)) +
+  scale_fill_manual(values = cols$colorFillDrug) +
+  geom_violin(trim = FALSE) +
+  geom_jitter(shape = 20, position = position_jitter(0.2)) +
+  geom_boxplot(width = 0.1) + ggtitle(paste(HES4.metadata[1, "SYMBOL"], " (",
+                                            rownames(HES4.metadata)[1], ") ",
+                                            " in HPB-ALL", sep = "")) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+
+ggarrange(p1, p2, labels = c("A", "B"), font.label = list(size = 12),
+          ncol = 2, nrow = 1)
+```
+
+```{r testViolinPlotsMYC, fig.width=12, fig.height=4}
+## KOPT-K1
+MYC.metadata <- tableIQR.005.KOPTK1.logfold.probes[tableIQR.005.KOPTK1.logfold.probes$SYMBOL %in% "MYC",]
+MYC.exprs <- searchGeneExprSet("MYC", exprSet.KOPTK1, genesMetadata.All)
+
+probeName <- rownames(MYC.metadata)
+
+df <- data.frame(reshape::melt(MYC.exprs[probeName[1],]), 
+                 Condition = dfMetadata.KOPTK1$Condition)
+p1 <- ggplot(df, aes(x = Condition, y = value, fill = Condition)) + 
+  scale_fill_manual(values = cols$colorFillDrug) + 
+  geom_violin(trim = FALSE) + 
+  geom_jitter(shape = 20, position = position_jitter(0.2)) + 
+  geom_boxplot(width = 0.1) + ggtitle(paste(MYC.metadata[1, "SYMBOL"], " (",
+                                            rownames(MYC.metadata)[1], ") ",
+                                            " in KOPT-K1", sep = "")) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+print(tableIQR.005.HPBALL[tableIQR.005.HPBALL$SYMBOL %in% "MYC",])
+
+## HPB-ALL
+MYC.metadata <- tableIQR.005.HPBALL[tableIQR.005.HPBALL$SYMBOL %in% "MYC",]
+MYC.exprs <- searchGeneExprSet("MYC", exprSet.HPBALL, genesMetadata.All)
+
+probeName <- rownames(MYC.metadata)
+
+df <- data.frame(reshape::melt(MYC.exprs[probeName[1],]),
+                 Condition = dfMetadata.HPBALL$Condition)
+p2 <- ggplot(df, aes(x = Condition, y = value, fill = Condition)) +
+  scale_fill_manual(values = cols$colorFillDrug) +
+  geom_violin(trim = FALSE) +
+  geom_jitter(shape = 20, position = position_jitter(0.2)) +
+  geom_boxplot(width = 0.1) + ggtitle(paste(MYC.metadata[1, "SYMBOL"], " (",
+                                            rownames(MYC.metadata)[1], ") ",
+                                            " in HPB-ALL (no DEG)", sep = "")) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+
+ggarrange(p1, p2, labels = c("A", "B"), font.label = list(size = 12),
+          ncol = 2, nrow = 1)
+```
+
+```{r testViolinPlotsDTX1, fig.width=12, fig.height=4}
+## KOPT-K1
+DTX1.metadata <- tableIQR.005.KOPTK1.logfold.probes[tableIQR.005.KOPTK1.logfold.probes$SYMBOL %in% "DTX1",]
+DTX1.exprs <- searchGeneExprSet("DTX1", exprSet.KOPTK1, genesMetadata.All)
+
+probeName <- rownames(DTX1.metadata)
+
+df <- data.frame(reshape::melt(DTX1.exprs[probeName[1],]), 
+                 Condition = dfMetadata.KOPTK1$Condition)
+p1 <- ggplot(df, aes(x = Condition, y = value, fill = Condition)) + 
+  scale_fill_manual(values = cols$colorFillDrug) + 
+  geom_violin(trim = FALSE) + 
+  geom_jitter(shape = 20, position = position_jitter(0.2)) + 
+  geom_boxplot(width = 0.1) + ggtitle(paste(DTX1.metadata[1, "SYMBOL"], " (",
+                                            rownames(DTX1.metadata)[1], ") ",
+                                            " in KOPT-K1", sep = "")) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+## HPB-ALL
+DTX1.metadata <- tableIQR.005.HPBALL.logfold.probes[tableIQR.005.HPBALL.logfold.probes$SYMBOL %in% "DTX1",]
+DTX1.exprs <- searchGeneExprSet("DTX1", exprSet.HPBALL, genesMetadata.All)
+
+probeName <- rownames(DTX1.metadata)
+
+df <- data.frame(reshape::melt(DTX1.exprs[probeName[1],]),
+                 Condition = dfMetadata.HPBALL$Condition)
+p2 <- ggplot(df, aes(x = Condition, y = value, fill = Condition)) +
+  scale_fill_manual(values = cols$colorFillDrug) +
+  geom_violin(trim = FALSE) +
+  geom_jitter(shape = 20, position = position_jitter(0.2)) +
+  geom_boxplot(width = 0.1) + ggtitle(paste(DTX1.metadata[1, "SYMBOL"], " (",
+                                            rownames(DTX1.metadata)[1], ") ",
+                                            " in HPB-ALL", sep = "")) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+
+ggarrange(p1, p2, labels = c("A", "B"), font.label = list(size = 12),
+          ncol = 2, nrow = 1)
+```
+
+## Geneset
+
+Hay genes que apaerecen en la tabla de genesets de NOTCH que no están en el 
+set completo de genes, por lo que GSEA no los va a encontrar. Utilizan a veces
+indistintamente SYMBOL y ALIAS.
+
+```{r}
+geneset_paper_sup <- read.delim(file.path(outputPath, "geneset_paper_probes.csv"), 
+                                header = FALSE)
+
+sum(rownames(esetIQR.KOPTK1) %in% geneset_paper_sup[,1])
+sum(rownames(esetIQR.HPBALL) %in% geneset_paper_sup[,1])
+
+geneset_paper_sup$SYMBOL <- genesMetadata.All[geneset_paper_sup[,1], "SYMBOL"]
+geneset_paper_sup$ALIAS <- genesMetadata.All[geneset_paper_sup[,1], "ALIAS"]
+
+write.table(geneset_paper_sup$SYMBOL, file = file.path(outputPath, "geneset_R.tsv"), 
+            sep = "\t")
+```
+
+
+## Heatmaps
+
+```{r}
+SAVE <- FALSE
+```
+
+```{r, fig.asp=1}
+diff <- rownames(toptableIQR.KOPTK1)[rownames(toptableIQR.KOPTK1) %in% 
+                                       geneset_paper_sup[,1]]
+
+genes_diff <- sapply(toptableIQR.KOPTK1[diff, "SYMBOL"], function(x) {
+  ifelse(x %in% tableIQR.005.KOPTK1.logfold.probes$SYMBOL,
+         TeX(paste("\\textbf{", x, " (DEG)}", sep = "")), x)})
+
+p1 <- pheatmap(mat = exprs(esetIQR.KOPTK1)[diff,], 
+               color = cols$heatmap25,
+               annotation_col = dfMetadata.KOPTK1[, "Condition", drop = FALSE],
+               cutree_cols = 2, border_color = "white", fontsize_row = 7.2,
+               cellwidth = 15, cluster_cols = FALSE, cellheight = 7,
+               labels_row = genes_diff,
+               angle_col = 315, main = "NOTCH1-geneset in KOPT-K1")
+
+if (isTRUE(SAVE)) {
+  q <- save_pheatmap_png(p1, file.path(plotsTexPath, "KOPT_heatmap_geneset.png"),
+                         res = 300)  
+}
+```
+
+```{r, fig.asp=1.2}
+diff <- rownames(toptableIQR.HPBALL)[rownames(toptableIQR.HPBALL) %in% 
+                                       geneset_paper_sup[,1]]
+
+genes_diff <- sapply(toptableIQR.HPBALL[diff, "SYMBOL"], function(x) {
+  ifelse(x %in% tableIQR.005.HPBALL.logfold.probes$SYMBOL,
+         TeX(paste("\\textbf{", x, " (DEG)}", sep = "")), x)})
+
+p1 <- pheatmap(mat = exprs(esetIQR.HPBALL)[diff,], 
+               color = cols$heatmap25,
+               annotation_col = dfMetadata.HPBALL[, "Condition", drop = FALSE],
+               cutree_cols = 2, border_color = "white", fontsize_row = 7.2,
+               cellwidth = 15, cluster_cols = FALSE, cellheight = 7,
+               labels_row = genes_diff,
+               angle_col = 315, main = "NOTCH1-geneset in HPBALL")
+
+if (isTRUE(SAVE)) {
+  q <- save_pheatmap_png(p1, file.path(plotsTexPath, "HPBALL_heatmap_geneset.png"),
+                         width = 1200, height = 1250, res = 300)  
+}
+```
+
+### Clusterización jerárquica de todos los genes no duplicados (KOPT-K1)
+
+```{r fig.asp=1}
+diffExp <- rownames(tableIQR.005.KOPTK1.logfold.probes.nodup)
+
+pheatmap(mat = exprs(esetIQR.KOPTK1)[diffExp,], 
+         color = cols$heatmap25,
+         annotation_col = dfMetadata.KOPTK1[, "Condition", drop = FALSE],
+         cutree_cols = 2, border_color = "white",
+         cellwidth = 22, cluster_cols = FALSE, annotation_row = NA,
+         show_rownames = FALSE, angle_col = 315, cutree_rows = 17)
+```
+
+### Clusterización jerárquica de todos los genes no duplicados (HPB-ALL)
+
+```{r fig.asp=1}
+diffExp <- rownames(tableIQR.005.HPBALL.logfold.probes.nodup)
+
+pheatmap(mat = exprs(esetIQR.HPBALL)[diffExp,], 
+         color = cols$heatmap25,
+         annotation_col = dfMetadata.HPBALL[, "Condition", drop = FALSE],
+         cutree_cols = 2, border_color = "white",
+         cellwidth = 22, cluster_cols = FALSE, annotation_row = NA,
+         show_rownames = FALSE, angle_col = 315, cutree_rows = 17)
+```
+
+## Ficheros para GSEA
+
+### Líneas normalizadas con cuantiles por separado
+
+```{r}
+write.GSEA.exprs(2**exprs(exprSet.KOPTK1), file.path(outputPath, 
+                                                "KOPTK1_exprss_all_nolog2.gct"))
+write.GSEA.exprs(exprSet.KOPTK1, file.path(outputPath, "KOPTK1_exprss_all.gct"))
+
+write.GSEA.exprs(2**exprs(exprSet.HPBALL), file.path(outputPath, 
+                                                "HPBALL_exprss_all_nolog2.gct"))
+write.GSEA.exprs(exprSet.HPBALL, file.path(outputPath, "HPBALL_exprss_all.gct"))
+
+write.GSEA.cond(exprSet.KOPTK1, dfMetadata.KOPTK1, 
+                file.path(outputPath, "KOPTK1_cond_all.cls"))
+write.GSEA.cond(exprSet.HPBALL, dfMetadata.HPBALL, 
+                file.path(outputPath, "HPBALL_cond_all.cls"))
+
+write.GSEA.conver(exprSet.KOPTK1, genesMetadata.All,
+                  file.path(outputPath, "KOPTK1_conver_all.chip"))
+write.GSEA.conver(exprSet.HPBALL, genesMetadata.All,
+                  file.path(outputPath, "HPBALL_conver_all.chip"))
+```
+
+### Todas las líneas juntas normalizadas por cuantiles
+
+```{r}
+write.GSEA.exprs(exprs(exprSet.All), file.path(outputPath, 
+                                               "exprss_all_quantiles.gct"))
+write.GSEA.exprs(2**exprs(exprSet.All), file.path(outputPath, 
+                                             "exprss_all_quantiles_nolog2.gct"))
+write.GSEA.cond(exprs(exprSet.All), dfTargets, file.path(outputPath, 
+                                                      "cond_all_quantiles.cls"))
+```
+
+### Todas las líneas celulares normalizadas con media DMSO
+
+```{r}
+if (file.exists(file.path(outputPath, paste(prefix,
+                          "exprSet.All.Norm.Mean.rds", sep = ".")))) {
+  
+  message(paste("Load exprSet object with Normalized data from",
+                file.path(outputPath, paste(prefix,
+                          "exprSet.All.Norm.Mean.rds", sep = "."))))
+  
+  exprSet.All.Norm.Mean <- readRDS(file = file.path(outputPath, paste(prefix,
+                                          "exprSet.All.Norm.Mean.rds", sep = ".")))
+} else {
+  exprSet.All.RMA <- expresso(rawDataAffy,
+                              bg.correct = TRUE,
+                              bgcorrect.method = "rma",
+                              normalize = FALSE,
+                              pmcorrect.method = "pmonly",
+                              summary.method = "medianpolish",
+                              verbose = TRUE)
+  
+  meanDMSO <- rowMeans(exprs(exprSet.All.RMA)[, dfTargets$Condition == "DMSO"])
+
+  exprSet.All.Norm.Mean <- exprs(exprSet.All.RMA) / meanDMSO
+    
+  saveRDS(exprSet.All.Norm.Mean, file = file.path(outputPath, paste(prefix,
+                                    "exprSet.All.Norm.Mean.rds", sep = ".")))
+}
+
+write.GSEA.exprs(exprSet.All.Norm.Mean, filePath = file.path(outputPath, 
+                                               "exprs_all_mean_normalized.gct"))
+write.GSEA.exprs(2**exprSet.All.Norm.Mean, filePath = file.path(outputPath, 
+                                        "exprs_all_mean_normalized_nolog2.gct"))
+```
+
+
+```{r boxplotsBaseAllMean, fig.width=12, fig.height=4}
+par(mfrow = c(1, 2), mar = c(5.1, 4.1, 1.4, 1.4), mgp=c(2.1, 1, 0))
+
+boxplot(rawDataAffy,
+		 col = cols$colorFill[as.factor(dfTargets$CellLine)],
+		 cex.axis = 0.84, las = 2, main = "Boxplots without normalization",
+		 cex.main = 0.99, ylab = "Gene expression")
+mtext("A", side = 2, adj=2, las=1, padj = -11.5, font = 2)
+
+legend("topright", legend = levels(as.factor(dfTargets$CellLine)),
+       fill = cols$colorFill, cex = 0.8, bg = "white")
+
+par(mar = c(5.1, 1.4, 1.4, 2.1))
+
+boxplot(exprSet.All.Norm.Mean,
+		 col = cols$colorFill[as.factor(dfTargets$CellLine)],
+		 main = "Boxplots with normalization", cex.main = 0.99,
+		 cex.axis = 0.84, las = 2)
+mtext("B", side = 2, adj = 2, las = 1, padj = -11.5, font = 2)
+```
+
+
+```{r histIntensitiesAllMean, fig.width=12, fig.height=4.2}
+par(mfrow = c(1, 2), mar = c(4.1, 4.1, 1.4, 1.8), mgp=c(2.1, 1, 0))
+hist(rawDataAffy, lty = rep(1, nrow(dfTargets)),
+     col = cols$colorPoints[as.factor(dfTargets$CellLine)],
+     xlab = "Intensity", ylab = "Density", cex.main = 0.99,
+     main = "Intensities without normalization")
+mtext("C", side = 2, adj=2, las=1, padj = -13, font = 2)
+grid()
+legend("topright", legend = levels(as.factor(dfTargets$CellLine)),
+       lty = rep(1, nrow(dfTargets)), col = cols$colorPoints, cex = 0.85,
+       bg = "white")
+
+par(mar = c(4.1, 1.8, 1.4, 2.1))
+plotDensities(exprSet.All.Norm.Mean, legend = FALSE,
+              col = cols$colorPoints[as.factor(dfTargets$CellLine)])
+title("Intensities with normalization", cex.main = 0.99)
+grid()
+legend("topright", legend = levels(as.factor(dfTargets$CellLine)),
+       lty = rep(1, nrow(dfTargets)), col = cols$colorPoints, cex = 0.85,
+       bg = "white")
+mtext("D", side = 2, adj = 2, las = 1, padj = -13, font = 2)
+```
+
+
+```{r}
+intersect.DEGs <- intersect(tableIQR.005.HPBALL$SYMBOL, 
+                            tableIQR.005.KOPTK1$SYMBOL)
+
+C3 <- msigdbr(species = "Homo sapiens", category = "C3")
+
+C3.TFT <- subset(C3, C3$gs_subcat == "TFT:GTRD" | 
+                   C3$gs_subcat == "TFT:TFT_Legacy") %>%
+  dplyr::select(gs_name, gene_symbol)
+
+enrichment <- enricher(intersect.DEGs, TERM2GENE = C3.TFT)
+```
+
+```{r enrichmentClusterProfiler}
+dotplot(enrichment, showCategory = 30, font.size = 9) + 
+  ggtitle("Enrichment of DEGs shared by KOPT-K1 and HPB-ALL") + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
